@@ -33,6 +33,7 @@ const state = {
   openDetails: new Set(),
   adding: null,      // category key being added to
   editing: null,     // item id being edited
+  pwFor: null,       // member email whose set-password form is open
   authMode: "signin",
   recovery: false,
   loaded: false,
@@ -230,9 +231,10 @@ function authHtml() {
       <div id="authMsg"></div>
     </form>
     <div class="auth-foot">
-      <span>${signin ? "New here? Create an account with the email the couple added." : "Use the exact email the couple put on the guest list."}</span>
+      <span>${signin ? "If the couple made your account, sign in with the password they gave you." : "Only needed if the couple did not make your account for you. Use the exact email they put on the guest list."}</span>
       ${signin ? `<button class="btn link" data-action="forgot">Forgot password?</button>` : ""}
     </div>
+    ${signin ? `<p class="small muted" style="margin:10px 0 0">Forgot it and no email arrives? Any owner can set a new password for you from the People tab.</p>` : ""}
   </div></div>`;
 }
 
@@ -597,25 +599,52 @@ function peopleHtml() {
   const owner = isOwner();
   return `<div class="panel">
     <h2>People</h2>
-    <p class="intro">Everyone on this list can sign in and see the build. <b>Owners</b> manage this list. <b>Editors</b> can check, choose, add, and edit. <b>Viewers</b> can see everything but change nothing.</p>
-    <div class="msg info" style="margin:0 0 14px">To invite someone: add their email here, then send them this page's link. They tap <b>Create account</b> and use that exact email. No confirmation email is needed once they are on the list.</div>
-    ${owner ? `<form id="inviteForm" class="invite" style="margin-bottom:16px">
+    <p class="intro">Everyone on this list can sign in and see the build. <b>Owners</b> manage this list and accounts. <b>Editors</b> can check, choose, add, and edit. <b>Viewers</b> can see everything but change nothing.</p>
+    ${owner ? `<div class="msg info" style="margin:0 0 14px">The easiest way to bring someone in: fill in their email, name, role, and a starter password, then send them this page's link and the password. Their account is ready immediately, no confirmation email. Leave the password blank to only add them to the list, in which case they create their own account with that exact email.</div>
+    <form id="inviteForm" class="invite" style="margin-bottom:16px">
       <div class="field"><label>Email</label><input name="email" type="email" required placeholder="name@example.com"></div>
       <div class="field"><label>Name</label><input name="name" required placeholder="How they appear in the app"></div>
       <div class="field"><label>Role</label><select name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option><option value="owner">Owner</option></select></div>
+      <div class="field"><label>Starter password (optional)</label><input name="password" type="text" minlength="8" autocomplete="off" placeholder="At least 8 characters"></div>
       <button class="btn" type="submit">Add</button>
     </form>` : ""}
     <div class="member-list">${state.members.map((m) => `<div class="member">
       <div class="avatar">${esc(initials(m.display_name || m.email))}</div>
-      <div><div class="name">${esc(m.display_name || m.email)} ${m.email === myEmail() ? '<span class="muted small">(you)</span>' : ""}</div><div class="email">${esc(m.email)}</div></div>
+      <div><div class="name">${esc(m.display_name || m.email)} ${m.email === myEmail() ? '<span class="muted small">(you)</span>' : ""}</div><div class="email">${esc(m.email)}</div>
+        ${state.pwFor === m.email ? `<form class="pw-form" data-email="${esc(m.email)}" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <input name="password" type="text" minlength="8" required autocomplete="off" placeholder="New password, 8+ characters" style="padding:6px 8px;border:1px solid var(--line-2);border-radius:6px;flex:1;min-width:200px">
+            <button class="btn sm" type="submit">Save</button><button class="btn ghost sm" type="button" data-action="pw-cancel">Cancel</button>
+          </form>` : ""}
+      </div>
       <div class="member-controls">
         ${owner && m.email !== myEmail()
           ? `<select data-action="role-change" data-email="${esc(m.email)}"><option value="owner" ${m.role === "owner" ? "selected" : ""}>Owner</option><option value="editor" ${m.role === "editor" ? "selected" : ""}>Editor</option><option value="viewer" ${m.role === "viewer" ? "selected" : ""}>Viewer</option></select>
+             <button class="btn ghost sm" data-action="pw-start" data-email="${esc(m.email)}">Set password</button>
              <button class="btn danger sm" data-action="member-remove" data-email="${esc(m.email)}">Remove</button>`
           : `<span class="role-badge ${m.role}">${esc(m.role)}</span>`}
       </div>
     </div>`).join("")}</div>
+  </div>
+  <div class="panel">
+    <h2>Your account</h2>
+    <p class="intro">Signed in as <b>${esc(state.user.email)}</b>. Change your password here any time. If you forget it, an owner can set a new one for you from the list above.</p>
+    <form id="myPwForm" class="invite" style="grid-template-columns:1fr 1fr auto">
+      <div class="field"><label>New password</label><input name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+      <div class="field"><label>Repeat it</label><input name="password2" type="password" minlength="8" required autocomplete="new-password"></div>
+      <button class="btn ghost" type="submit">Change password</button>
+    </form>
   </div>`;
+}
+
+async function manageMembers(body) {
+  const { data, error } = await sb.functions.invoke("manage-members", { body });
+  if (error) {
+    let msg = error.message || "Request failed";
+    try { const j = await error.context?.json?.(); if (j?.error) msg = j.error; } catch (_) { /* ignore */ }
+    throw new Error(msg);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
 }
 
 // ---------------------------------------------------------------- activity
@@ -743,14 +772,22 @@ $app.addEventListener("click", async (e) => {
     }
     case "member-remove": {
       const email = btn.dataset.email;
-      if (!confirm(`Remove ${email} from the guest list? They will lose access immediately.`)) return;
-      const i = state.members.findIndex((m) => m.email === email);
-      const backup = i >= 0 ? state.members.splice(i, 1)[0] : null;
-      render();
-      const { error } = await sb.from("members").delete().eq("email", email);
-      if (error) { if (backup) state.members.splice(i, 0, backup); render(); dbError(error, "Removing"); }
+      if (!confirm(`Remove ${email} from the guest list and delete their account? They lose access immediately.`)) return;
+      btn.disabled = true;
+      try {
+        await manageMembers({ action: "delete", email });
+        const i = state.members.findIndex((m) => m.email === email);
+        if (i >= 0) state.members.splice(i, 1);
+        render();
+        toast(`${displayName(email)} removed`);
+      } catch (err) {
+        btn.disabled = false;
+        toast(`Removing failed: ${err.message}`, "err");
+      }
       break;
     }
+    case "pw-start": state.pwFor = btn.dataset.email; render(); document.querySelector(".pw-form input")?.focus(); break;
+    case "pw-cancel": state.pwFor = null; render(); break;
   }
 });
 
@@ -822,7 +859,7 @@ $app.addEventListener("submit", async (e) => {
       const name = String(fd.get("name")).trim();
       const { data, error } = await sb.auth.signUp({ email, password, options: { data: { display_name: name }, emailRedirectTo: location.origin + location.pathname } });
       if (error) setAuthMsg(error.message, "err");
-      else if (!data.session) setAuthMsg("Account created. Check your email for a confirmation link, then come back and sign in.", "ok");
+      else if (!data.session) setAuthMsg("Account created. Click the confirmation link in your email, then come back to this page and sign in. If the page the link opens does not load, the confirmation still went through.", "ok");
       else {
         // record the display name on the guest list if the owner left it blank
         const { data: m } = await sb.from("members").select("*").eq("email", email).maybeSingle();
@@ -848,12 +885,60 @@ $app.addEventListener("submit", async (e) => {
   if (form.id === "inviteForm") {
     const fd = new FormData(form);
     const email = String(fd.get("email")).trim().toLowerCase();
-    const row = { email, role: String(fd.get("role")), display_name: String(fd.get("name")).trim(), added_by: myEmail() };
-    const { data, error } = await sb.from("members").upsert(row).select().single();
-    if (error) { dbError(error, "Adding"); return; }
-    if (!state.members.find((m) => m.email === data.email)) state.members.push(data);
-    render();
-    toast(`${data.display_name} added as ${data.role}`);
+    const role = String(fd.get("role"));
+    const display_name = String(fd.get("name")).trim();
+    const password = String(fd.get("password") || "");
+    setBusy(form, true);
+    try {
+      if (password) {
+        if (password.length < 8) throw new Error("The starter password needs at least 8 characters");
+        await manageMembers({ action: "create", email, password, display_name, role });
+        const { data } = await sb.from("members").select("*").eq("email", email).maybeSingle();
+        if (data) {
+          const i = state.members.findIndex((m) => m.email === email);
+          if (i >= 0) state.members[i] = data; else state.members.push(data);
+        }
+        render();
+        toast(`Account ready for ${display_name}. Send them the link and the password.`);
+      } else {
+        const row = { email, role, display_name, added_by: myEmail() };
+        const { data, error } = await sb.from("members").upsert(row).select().single();
+        if (error) throw error;
+        const i = state.members.findIndex((m) => m.email === data.email);
+        if (i >= 0) state.members[i] = data; else state.members.push(data);
+        render();
+        toast(`${data.display_name} added as ${data.role}. They can create their own account with that email.`);
+      }
+    } catch (err) {
+      setBusy(form, false);
+      toast(`Adding failed: ${err.message}`, "err");
+    }
+    return;
+  }
+  if (form.classList.contains("pw-form")) {
+    const fd = new FormData(form);
+    const email = form.dataset.email;
+    setBusy(form, true);
+    try {
+      await manageMembers({ action: "reset_password", email, password: String(fd.get("password")) });
+      state.pwFor = null;
+      render();
+      toast(`New password set for ${displayName(email)}`);
+    } catch (err) {
+      setBusy(form, false);
+      toast(`Setting the password failed: ${err.message}`, "err");
+    }
+    return;
+  }
+  if (form.id === "myPwForm") {
+    const fd = new FormData(form);
+    if (fd.get("password") !== fd.get("password2")) { toast("The two passwords do not match.", "err"); return; }
+    setBusy(form, true);
+    const { error } = await sb.auth.updateUser({ password: String(fd.get("password")) });
+    setBusy(form, false);
+    if (error) { toast(`Could not change the password: ${error.message}`, "err"); return; }
+    form.reset();
+    toast("Your password is changed");
     return;
   }
   if (form.id === "addForm") {

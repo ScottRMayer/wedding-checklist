@@ -221,7 +221,7 @@ td.num, th.num { text-align: right; }
 .member .email { font-size: 13px; color: var(--ink-3); }
 .member select { padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 6px; background: #fff; }
 .member-controls { display: flex; gap: 8px; align-items: center; }
-.invite { display: grid; grid-template-columns: 1fr 1fr 140px auto; gap: 8px; align-items: end; }
+.invite { display: grid; grid-template-columns: 1.3fr 1fr 120px 1fr auto; gap: 8px; align-items: end; }
 .invite .field { margin: 0; }
 .role-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px; background: var(--bg-2); color: var(--ink-2); }
 .role-badge.owner { background: var(--gold-soft); color: #8a6220; }
